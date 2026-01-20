@@ -1,0 +1,24 @@
+; Sagt Dune, dass es in allen Unterordnern nach Modulen suchen soll
+(include_subdirs unqualified)
+
+(executable
+ (name main)
+ 
+ ; Deine Bibliotheken aus dem Makefile
+ (libraries unix str num)
+
+ ; Dein C-Code aus dem Makefile
+ (foreign_stubs
+  (language c)
+  (names runtime))
+ 
+ ; Keine (modules ...)-Liste, damit 
+ ; (include_subdirs ...) alle automatisch findet.
+)
+
+(env
+ (dev
+  (flags (:standard -warn-error -A -no-strict-formats)))
+ 
+ ; (menhir_flags) entfernt, da es nicht mehr benötigt wird
+)
