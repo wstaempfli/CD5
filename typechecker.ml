@@ -298,8 +298,93 @@ let rec typecheck_exp (c : Tctxt.t) (e : Ast.exp node) : Ast.ty =
      block typecheck rules.
 *)
 let rec typecheck_stmt (tc : Tctxt.t) (s:Ast.stmt node) (to_ret:ret_ty) : Tctxt.t * bool =
-  failwith "todo: implement typecheck_stmt"
+  match s.elt with 
+    | Decl (id, exp) -> 
+      let ty = typecheck_exp tc exp in
+      (match lookup_local_option id tc with 
+        | Some _ -> type_error exp "variable already defined in Locals"
+        | None -> (add_local tc id ty, false))
+    | Assn (e1, e2) -> 
+      let t1 = typecheck_exp tc e1 in 
+      let t2 = typecheck_exp tc e2 in
+      (match e1.elt with 
+        | Id id -> 
+          (*make sure we're not overwriting a global function*)
+          (match lookup_local_option id tc with 
+            | Some _ -> ()
+            | None -> 
+              (match lookup_global_option id tc with 
+                | Some (TRef (RFun _)) -> type_error e1 "tried to overwrite global function"
+                | Some _ -> ()
+                | _ -> type_error e1 "variable not found")
+          )
+        | _ -> ());
+      (*make sure rhs is subtype of lhs*)
+      if not (subtype tc t2 t1) then type_error e1 "subtype check failed in Assn"
+      else (tc, false)
+    | SCall (e1, list) -> 
+      let fun_ty = typecheck_exp tc e1 in
+      (match fun_ty with 
+        | TRef (RFun (args, RetVoid)) -> 
+          let compiled_list = List.map (typecheck_exp tc)  list in
+          (try (
+              if (List.exists (fun (t1, t2) -> not (subtype tc t1 t2)) (List.combine compiled_list args)) 
+              then type_error e1 "subtyper failed in SCall"
+              else (tc, false))
+          with Invalid_argument _-> 
+              type_error e1 "different length in Scall")
+        | _ -> type_error e1 "non void function or not even a function")
 
+    | If (cnd, b1, b2) -> 
+      let ty_cnd = typecheck_exp tc cnd in
+      if ty_cnd <> TBool then type_error cnd "not a bool in cnd field of IF"
+      else
+      let (_, ret1) = typecheck_block tc b1 to_ret in
+      let (_, ret2) = typecheck_block tc b2 to_ret in
+      (tc, ret1 && ret2)
+      
+    | Cast (ref, id, e, b1, b2) -> 
+      let t1 = typecheck_exp tc e in 
+      (match t1 with 
+        |TNullRef (rt) -> 
+          if (not (subtype_ref tc rt ref)) then type_error s "Cast: not subtype"
+          else 
+            let ctxt1 = add_local tc id (TRef ref) in
+            let (_, r1) = typecheck_block ctxt1 b1 to_ret in
+            let (_, r2) = typecheck_block tc b2 to_ret in
+            (tc, r1 && r2)
+        | _ -> type_error s "invalid cast")
+    | While (cnd, b) -> 
+      let t = typecheck_exp tc cnd in
+      if(t <> TBool) then type_error s "while condition not bool"
+      else 
+        let (_, _) = typecheck_block tc b to_ret in
+        (tc, false)
+    | For (vdecls, e_cond_opt, s_update_opt, b_body) -> failwith "ToDo"
+
+    | Ret (Some exp) ->
+      let t = typecheck_exp tc exp in  
+      (match to_ret with 
+        | RetVoid -> type_error s "got non void return val"
+        | RetVal x -> 
+          if (not (subtype tc t x)) then type_error s "return types dont match"
+          else (tc, true))
+
+    | Ret (None) -> 
+      match to_ret with 
+        |RetVoid -> tc, true
+        |_ -> type_error s "expected return value, got void"
+
+and typecheck_block (tc : Tctxt.t) (sts : Ast.stmt node list) (to_ret : ret_ty) : Tctxt.t * bool = 
+  match sts with 
+    | [] -> (tc, false)
+    | s::zs -> 
+      let (new_ctxt, returns) = typecheck_stmt tc s to_ret in 
+      if not returns then typecheck_block new_ctxt zs to_ret 
+      else 
+        (match zs with 
+          | [] -> (new_ctxt, true)
+          | _-> type_error s "code after guaranteed return")
 
 (* struct type declarations ------------------------------------------------- *)
 (* Here is an example of how to implement the TYP_TDECLOK rule, which is 
@@ -316,18 +401,6 @@ let typecheck_tdecl (tc : Tctxt.t) id fs  (l : 'a Ast.node) : unit =
   if check_dups fs
   then type_error l ("Repeated fields in " ^ id) 
   else List.iter (fun f -> typecheck_ty l tc f.ftyp) fs
-
-
-let rec typecheck_block (tc : Tctxt.t) (sts : Ast.stmt node list) (to_ret : ret_ty) : bool = 
-  match sts with 
-    | [] -> false
-    | s::zs -> 
-      let (new_ctxt, returns) = typecheck_stmt tc s to_ret in 
-      if not returns then typecheck_block new_ctxt zs to_ret 
-      else 
-        (match zs with 
-          | [] -> true 
-          | _-> type_error s "code after guaranteed return")
 
 (* function declarations ---------------------------------------------------- *)
 (* typecheck a function declaration 
@@ -346,7 +419,7 @@ let typecheck_fdecl (tc : Tctxt.t) (f : Ast.fdecl) (l : 'a Ast.node) : unit =
   (*check uniqueness of argument names*)
   if (check_dups_args f.args) then type_error l "argument names are not distinct";
   (*iterate through each statement of body with newest context, if no errors raised return void*)
-  if not (typecheck_block new_ctxt f.body f.frtyp) then type_error l "block check failed, not guaranteed return"
+  if not (snd (typecheck_block new_ctxt f.body f.frtyp)) then type_error l "block check failed, not guaranteed return"
   else ()
 
 (* creating the typchecking context ----------------------------------------- *)
